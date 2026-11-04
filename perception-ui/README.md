@@ -1,36 +1,73 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app).
+# 💻 Perception UI Frontend
 
-## Getting Started
+Modern, responsive client application for **Perception**, built with **Next.js 15 (App Router)**, **React 19**, **Tailwind CSS**, and **Radix UI / Shadcn UI**.
 
-First, run the development server:
+---
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## 🎨 Frontend Architecture
+
+The user interface delivers distinct, role-based workflows for both educators and learners:
+
+```
+perception-ui/
+├── app/
+│   ├── (auth)/         # Login, signup, and about routes
+│   ├── (main)/         # Protected teacher & student dashboards and analytics
+│   ├── layout.jsx      # Global theme & query providers
+│   └── page.jsx        # Landing page with hero & feature highlights
+├── components/
+│   ├── dashboard/      # Role-specific dashboard views (Student & Teacher)
+│   ├── layout/         # Navigation header & theme toggles
+│   └── ui/             # Reusable Shadcn UI primitives (cards, dialogs, badges)
+├── store/              # Client-side session state via Zustand
+└── api/                # Axios instance with centralized header injection interceptors
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+---
 
-You can start editing the page by modifying `app/page.js`. The page auto-updates as you edit the file.
+## ✨ Features & UX Highlights
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- **Dynamic Role-Based Views:** Seamlessly renders student assessment portals or teacher review stations based on authenticated role.
+- **Real-Time Assessment Feedback:** Submits descriptive answers asynchronously and surfaces LLM feedback and scores with optimistic state updates.
+- **Teacher Review & Override Station:** Allows teachers to inspect student responses side-by-side with model answers and manually adjust final grades.
+- **Aggregated Analytics:** Live dashboard displaying submission counts, score distributions, and evaluation metrics.
+- **Theme Support:** Dark and light mode out of the box via `next-themes`.
 
-## Learn More
+---
 
-To learn more about Next.js, take a look at the following resources:
+## 🛠️ Tech Stack
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- **Framework:** [Next.js](https://nextjs.org/) (v16.x App Router) & [React 19](https://react.dev/)
+- **Styling:** [Tailwind CSS v4](https://tailwindcss.com/) & [tw-animate-css](https://github.com/lucas-diniz/tw-animate-css)
+- **UI Components:** [Radix UI](https://www.radix-ui.com/) primitives & [Lucide Icons](https://lucide.dev/)
+- **State Management:** [Zustand](https://zustand.docs.pmnd.rs/) with localStorage persistence
+- **HTTP Client:** [Axios](https://axios-http.com/) with automated auth interceptors
+- **Notifications:** [Sonner](https://sonner.emilkowal.ski/) toast system
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+---
 
-## Deploy on Vercel
+## 🚀 Local Development Setup
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+1. **Navigate to the frontend folder:**
+   ```bash
+   cd perception-ui
+   ```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+2. **Install dependencies:**
+   ```bash
+   npm install
+   ```
+
+3. **Configure environment:**
+   ```bash
+   cp .env.example .env.local
+   # Ensure NEXT_PUBLIC_API_URL points to your running backend
+   ```
+
+4. **Start development server:**
+   ```bash
+   npm run dev
+   ```
+
+5. **Visit the app:**
+   Open [http://localhost:3000](http://localhost:3000) in your browser.
