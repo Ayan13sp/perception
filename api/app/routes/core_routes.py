@@ -1,15 +1,80 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+import hashlib
+import io
+
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
 from beanie.odm.fields import PydanticObjectId
 from typing import List, Optional
 
-from app.db.database import User, QuestionSet, Submission
-from app.models.teacher_models import QuestionSetCreate, QuestionSetOut, SubmissionReviewOut, ScoreUpdate
+from app.core.config import settings
+from app.db.database import User, QuestionSet, Submission, ReferenceChunk
+from app.models.teacher_models import (
+    QuestionSetCreate, QuestionSetOut, SubmissionReviewOut, ScoreUpdate, ReferenceUploadOut,
+)
 from app.models.student_models import SubmissionCreate, SubmissionResultOut, QuestionSetForStudentOut
 from app.models.user_models import UserOut
 from app.services.auth_dependencies import get_current_user
 from app.services.ai_service import get_ai_evaluation
+from app.services.grading import run_grading_graph
+from app.services.grading.tools import has_reference_material
 
 router = APIRouter()
+
+MAX_REFERENCE_BYTES = 5 * 1024 * 1024
+CHUNK_CHARS = 1200
+CHUNK_OVERLAP = 200
+
+
+def _hash_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _chunk_text(text: str) -> List[str]:
+    """Paragraph-aware chunking with a small character overlap."""
+    paragraphs = [p.strip() for p in text.replace("\r", "").split("\n\n") if p.strip()]
+    chunks, current = [], ""
+    for p in paragraphs:
+        while len(p) > CHUNK_CHARS:  # split very long paragraphs
+            head, p = p[:CHUNK_CHARS], p[CHUNK_CHARS - CHUNK_OVERLAP:]
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(head)
+        if len(current) + len(p) + 2 > CHUNK_CHARS and current:
+            chunks.append(current)
+            current = current[-CHUNK_OVERLAP:] + "\n\n" + p
+        else:
+            current = f"{current}\n\n{p}" if current else p
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _extract_text(filename: str, data: bytes) -> str:
+    name = filename.lower()
+    if name.endswith(".pdf"):
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(data))
+        return "\n\n".join(page.extract_text() or "" for page in reader.pages)
+    if name.endswith((".txt", ".md")):
+        return data.decode("utf-8", errors="ignore")
+    raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Only .pdf, .txt and .md files are supported.")
+
+
+async def _get_owned_question_set(id: str, current_user: User) -> QuestionSet:
+    if current_user.role != "teacher":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only teachers can manage question sets.")
+    try:
+        obj_id = PydanticObjectId(id)
+    except Exception:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid question set ID format.")
+    qs = await QuestionSet.get(obj_id)
+    if not qs:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Question set not found.")
+    creator_id = getattr(getattr(qs, 'creator', None), 'ref', None)
+    creator_id = creator_id.id if creator_id else getattr(getattr(qs, 'creator', None), 'id', None)
+    if creator_id and creator_id != current_user.id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to question sets from other teachers.")
+    return qs
 
 # ----------------- Helper Converters -----------------
 
@@ -86,7 +151,8 @@ async def to_submission_review_out(sub: Submission) -> SubmissionReviewOut:
         student_answer=sub.student_answer,
         ai_score=sub.ai_score,
         ai_feedback=sub.ai_feedback,
-        final_score=sub.final_score
+        final_score=sub.final_score,
+        grading_trace=getattr(sub, 'grading_trace', None)
     )
 
 async def to_submission_result_out(sub: Submission) -> SubmissionResultOut:
@@ -209,6 +275,44 @@ async def finalize_submission_score(id: str, score_data: ScoreUpdate, current_us
     await sub.save()
     return await to_submission_review_out(sub)
 
+@router.post("/teacher/question-sets/{id}/references", response_model=ReferenceUploadOut, status_code=status.HTTP_201_CREATED)
+async def upload_reference_material(id: str, file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
+    """Upload lecture notes (PDF/TXT/MD) the fact-checker agent can search."""
+    qs = await _get_owned_question_set(id, current_user)
+    data = await file.read(MAX_REFERENCE_BYTES + 1)
+    if len(data) > MAX_REFERENCE_BYTES:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File exceeds 5 MB.")
+
+    text = _extract_text(file.filename or "", data)
+    chunks = _chunk_text(text)
+    if not chunks:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "No extractable text found in file.")
+
+    source = (file.filename or "upload")[:200]
+    # Re-uploading the same file replaces its previous chunks
+    await ReferenceChunk.find({"question_set_id": qs.id, "source_name": source}).delete()
+    await ReferenceChunk.insert_many([
+        ReferenceChunk(question_set_id=qs.id, source_name=source, chunk_index=i, content=c)
+        for i, c in enumerate(chunks)
+    ])
+    return ReferenceUploadOut(source_name=source, chunks=len(chunks), characters=len(text))
+
+@router.get("/teacher/question-sets/{id}/references", response_model=List[ReferenceUploadOut])
+async def list_reference_material(id: str, current_user: User = Depends(get_current_user)):
+    qs = await _get_owned_question_set(id, current_user)
+    chunks = await ReferenceChunk.find({"question_set_id": qs.id}).to_list()
+    summary: dict = {}
+    for c in chunks:
+        entry = summary.setdefault(c.source_name, {"chunks": 0, "characters": 0})
+        entry["chunks"] += 1
+        entry["characters"] += len(c.content)
+    return [ReferenceUploadOut(source_name=k, **v) for k, v in summary.items()]
+
+@router.delete("/teacher/question-sets/{id}/references/{source_name}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_reference_material(id: str, source_name: str, current_user: User = Depends(get_current_user)):
+    qs = await _get_owned_question_set(id, current_user)
+    await ReferenceChunk.find({"question_set_id": qs.id, "source_name": source_name}).delete()
+
 # ----------------- Student Routes -----------------
 
 @router.get("/student/question-sets", response_model=List[QuestionSetForStudentOut])
@@ -285,7 +389,24 @@ async def submit_student_answer(sub_data: SubmissionCreate, current_user: User =
     if not question_set:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Question set not found.")
 
-    evaluation = await get_ai_evaluation(question_set.model_answer, sub_data.answer)
+    if settings.GRADING_PIPELINE == "legacy":
+        evaluation = await get_ai_evaluation(question_set.model_answer, sub_data.answer)
+        evaluation["trace"] = {"pipeline": "legacy"}
+    else:
+        model_hash = _hash_text(question_set.model_answer)
+        cached_rubric = question_set.rubric_criteria if question_set.rubric_hash == model_hash else None
+        evaluation = await run_grading_graph(
+            question=question_set.question,
+            model_answer=question_set.model_answer,
+            student_answer=sub_data.answer,
+            question_set_id=question_set.id,
+            rubric_criteria=cached_rubric,
+            has_references=await has_reference_material(question_set.id),
+        )
+        # Cache the decomposed rubric so later submissions skip that LLM call
+        if evaluation.get("rubric_generated"):
+            await question_set.set({"rubric_criteria": evaluation["rubric_criteria"], "rubric_hash": model_hash})
+
     if evaluation.get("score") == -1:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, evaluation.get("feedback", "AI evaluation failed"))
 
@@ -294,7 +415,8 @@ async def submit_student_answer(sub_data: SubmissionCreate, current_user: User =
         student=current_user,
         student_answer=sub_data.answer,
         ai_score=evaluation["score"],
-        ai_feedback=evaluation["feedback"]
+        ai_feedback=evaluation["feedback"],
+        grading_trace=evaluation.get("trace"),
     )
     await submission.insert()
     return await to_submission_result_out(submission)

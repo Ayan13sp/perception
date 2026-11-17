@@ -12,3 +12,6 @@ groq
 google-auth
 requests
 python-multipart
+langgraph>=1.0,<2
+sympy
+pypdf

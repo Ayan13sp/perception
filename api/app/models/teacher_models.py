@@ -27,10 +27,17 @@ class SubmissionReviewOut(BaseModel):
     ai_score: int
     ai_feedback: str
     final_score: int | None
+    # Multi-agent audit trail (path, per-criterion scores, critic verdict...)
+    grading_trace: Optional[dict] = None
 
     class Config:
         from_attributes = True
         arbitrary_types_allowed = True
+
+class ReferenceUploadOut(BaseModel):
+    source_name: str
+    chunks: int
+    characters: int
 
 class ScoreUpdate(BaseModel):
     final_score: int = Field(..., ge=0, le=10)
