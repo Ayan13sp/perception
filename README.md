@@ -49,33 +49,36 @@ Perception separates concerns across a decoupled Next.js client, an asynchronous
 ```mermaid
 flowchart TD
     subgraph Client["Frontend Client (Vercel)"]
-        UI["Next.js 15 + React 19 UI"]
+        UI["Next.js + React 19 UI"]
         State["Zustand Auth & Local Storage"]
-        Interceptors["Axios Interceptors (X-User-ID)"]
+        Interceptors["Axios Interceptors (Bearer JWT)"]
     end
 
+    Assistants["AI assistants\n(Claude Code, Cursor, Claude Desktop)"]
+
     subgraph Server["Backend Service (FastAPI / Render)"]
-        Router["FastAPI Route Handlers"]
-        AuthMid["Role-Based Access Control"]
-        Defense["4-Layer Prompt Injection Shield"]
+        Router["REST routes /auth, /api"]
+        MCP["MCP server /mcp\n(personal access tokens)"]
+        Services["Shared services\naccess · exams · evaluation · analytics"]
+        Graph["LangGraph grading graph\ngatekeeper → rubric → fact-check → grader → critic"]
         ODM["Beanie ODM + Motor Async Engine"]
     end
 
     subgraph External["External Services"]
-        Groq["Groq Cloud LPU Inference\n(openai/gpt-oss-120b)"]
-        Mongo[("MongoDB Atlas Database\n(Users, QuestionSets, Submissions)")]
+        Groq["Groq Cloud LPU Inference\n(gpt-oss-120b, llama-3.1-8b)"]
+        Mongo[("MongoDB Atlas\n(Users, QuestionSets, Submissions, Notes, Tokens)")]
     end
 
     UI --> State
     UI --> Interceptors
-    Interceptors -->|HTTP Requests| Router
-    Router --> AuthMid
-    Router --> ODM
+    Interceptors -->|HTTPS + JWT| Router
+    Assistants -->|Streamable HTTP + PAT| MCP
+    Router --> Services
+    MCP --> Services
+    Services --> Graph
+    Services --> ODM
     ODM <-->|Async I/O| Mongo
-    Router --> Defense
-    Defense -->|Sanitized & Delimited Prompt| Groq
-    Groq -->|Structured JSON Response| Defense
-    Defense -->|Validated Score & Feedback| Router
+    Graph -->|Delimited, validated prompts| Groq
 ```
 
 ---
@@ -131,11 +134,13 @@ Responses are enforced to valid JSON objects, and scores are programmatically cl
 - **AI-Assisted Grading Dashboard:** Monitor student submissions in real time with pre-calculated AI scores.
 - **Teacher-in-the-Loop Override:** Review student responses side-by-side with reference answers; manually override AI scores and finalize grades.
 - **Class Analytics:** Monitor aggregate class submission volume and evaluation progress.
+- **AI assistant (MCP):** From Claude Code, Cursor or Claude Desktop, review grades where the Grader and Critic agents disagreed, regrade with an extra rubric note, get a class misconception report, and draft and publish new exams in conversation.
 
 ### 👨‍🎓 For Students
 - **Personalized Portal:** View newly assigned question sets and previous submission history.
 - **Instant Semantic Feedback:** Submit long-form descriptive answers and receive qualitative feedback and scores within seconds.
 - **Submission Status Tracking:** Clear distinction between preliminary AI feedback and finalized teacher-reviewed marks.
+- **AI study coach (MCP):** Ask an AI assistant for your progress trend and a personal improvement plan. It's built from your weak rubric criteria (once your teacher finalizes a grade) and points you to the lecture notes your teacher shared.
 
 ---
 
@@ -149,20 +154,25 @@ Responses are enforced to valid JSON objects, and scores are programmatically cl
 | **Backend** | **FastAPI (Python 3.10+)** | High-performance asynchronous ASGI framework with automated OpenAPI docs. |
 | **Database** | **MongoDB Atlas + Beanie ODM** | Asynchronous document-object mapper with typed Pydantic schemas and DBRef linking. |
 | **AI Inference** | **Groq Cloud API** | Fast token generation via LPU inference (`openai/gpt-oss-120b`) in JSON mode. |
-| **Security** | **PBKDF2-HMAC-SHA256** | Salted password hashing with constant-time comparison defense. |
+| **AI Orchestration** | **LangGraph** | Stateful multi-agent grading graph with confidence-based routing to a critic agent. |
+| **AI Integrations** | **MCP Python SDK 2.x** | Model Context Protocol server (resources, tools, prompts, elicitation, progress) over Streamable HTTP and stdio. |
+| **Security** | **PBKDF2-HMAC-SHA256, JWT, PATs** | Salted password hashing; HS256 JWTs for the web app; hashed, revocable personal access tokens for MCP clients; access checks that deny when unsure. |
 | **Hosting** | **Vercel & Render** | Continuous deployment with decoupled frontend (Vercel) and API backend (Render). |
 
 ---
 
 ## 🔌 API Specification
 
-All protected endpoints accept the authenticated user token via headers (`X-User-ID`). Complete interactive documentation is accessible at `/docs` (Swagger UI).
+Protected endpoints require `Authorization: Bearer <access_token>`, using the JWT returned by `/auth/login` or `/auth/signup`. Complete interactive documentation is accessible at `/docs` (Swagger UI). The MCP server lives at `/mcp`; see the [API README](api/README.md#-mcp-server-perception-in-claude-cursor-and-other-ai-assistants).
 
 ### Authentication Routes
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `POST` | `/auth/signup` | Register a new student or teacher account |
-| `POST` | `/auth/login` | Authenticate user credentials and return profile & role |
+| `POST` | `/auth/signup` | Register a new student or teacher account and return a JWT |
+| `POST` | `/auth/login` | Authenticate credentials and return the profile, role and a JWT |
+| `POST` | `/auth/tokens` | Create a personal access token for an MCP client (shown once) |
+| `GET` | `/auth/tokens` | List your active tokens |
+| `DELETE` | `/auth/tokens/{id}` | Revoke a token |
 
 ### Teacher Routes
 | Method | Endpoint | Description |
@@ -171,6 +181,8 @@ All protected endpoints accept the authenticated user token via headers (`X-User
 | `POST` | `/api/teacher/question-sets` | Create a new question set with model answer rubric |
 | `GET` | `/api/teacher/question-sets/{id}/submissions` | Retrieve all student submissions for a specific rubric |
 | `PUT` | `/api/teacher/submissions/{id}/finalize` | Override or finalize the grade for a student submission |
+| `POST` | `/api/teacher/question-sets/{id}/references` | Upload lecture notes (PDF/TXT/MD) for the fact-checker; optionally share excerpts with students |
+| `GET` / `DELETE` | `/api/teacher/question-sets/{id}/references[/{source}]` | List or remove uploaded notes |
 
 ### Student Routes
 | Method | Endpoint | Description |
@@ -197,8 +209,11 @@ perception/
 │   │   ├── db/                      # MongoDB initialization & Beanie models
 │   │   ├── models/                  # Pydantic schemas for request/response validation
 │   │   ├── routes/                  # API endpoints (auth_routes, core_routes)
-│   │   ├── services/                # AI grading engine & prompt injection defenses
-│   │   └── main.py                  # FastAPI application entrypoint & CORS config
+│   │   ├── mcp_server/              # MCP server (resources, tools, prompts) + stdio entry point
+│   │   ├── services/                # Shared business logic, LangGraph grader & prompt defenses
+│   │   └── main.py                  # FastAPI entrypoint, CORS config, /mcp mount
+│   ├── scripts/seed_demo.py         # Demo classroom for analytics and MCP
+│   ├── tests/                       # Pytest suite (hermetic: no API keys or database needed)
 │   ├── requirements.txt             # Python dependencies
 │   ├── build.sh                     # Deployment script for Render
 │   └── .env.example                 # Backend environment variable template
@@ -274,12 +289,23 @@ npm run dev
 ```
 Frontend will be live at `http://localhost:3000`.
 
+### 4. Optional: demo data and an AI assistant
+```bash
+cd api
+python -m scripts.seed_demo --synthetic      # demo classroom; prints MCP tokens
+claude mcp add --transport http perception http://localhost:8000/mcp --header "Authorization: Bearer pcp_..."
+pytest                                       # run the test suite
+```
+Then ask Claude to run the `review_flagged_grades` prompt for one of the demo exams. To create your own token, use the profile menu → **Connect AI assistant**.
+
 ---
 
 ## 🔮 Future Roadmap
 
 - [ ] **Multi-Modal Submissions:** OCR support for grading handwritten descriptive answer sheets.
-- [ ] **Rubric Weighting:** Customizable scoring criteria (e.g., clarity, factual accuracy, grammar).
+- [x] **Rubric Weighting:** Weighted, atomic rubric criteria, generated by an agent or supplied by the teacher.
+- [x] **AI assistant integration:** MCP server for teachers and students.
+- [ ] **One-click connectors:** OAuth 2.1 for the MCP server, so remote connectors work without pasting a token.
 - [ ] **Semantic Similarity Caching:** Cache evaluations for semantically identical answers to minimize API cost and latency.
 - [ ] **Batch Grading Export:** Export class grade reports to CSV and LMS integrations (Canvas, Google Classroom).
 

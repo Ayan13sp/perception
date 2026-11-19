@@ -14,7 +14,14 @@ api/app/
 ├── db/                 # Database initialization and Beanie document models
 ├── models/             # Pydantic schemas for request validation & response serialization
 ├── routes/             # RESTful API route controllers (Auth, Core evaluation)
-└── services/           # Business logic: AI evaluation, prompt defense & auth helpers
+├── mcp_server/         # MCP server: resources, tools, prompts; PAT auth; stdio entry point
+└── services/           # Business logic shared by REST and MCP
+    ├── access.py       # Authorization checks that deny when unsure
+    ├── analytics.py    # Exam/student analytics (pure functions + loaders)
+    ├── evaluation.py   # Grading orchestration and regrades
+    ├── exams.py        # Exam authoring, rubric drafting/validation
+    ├── repo.py         # All MongoDB queries, behind one seam
+    ├── security.py     # JWT and personal-access-token primitives
     └── grading/        # LangGraph multi-agent grader: state, nodes, tools, graph
 ```
 
@@ -72,13 +79,84 @@ graph TD;
 | `PASS_MARK` | `5.0` | scores within ±0.5 are borderline and audited |
 | `MAX_TOOL_ROUNDS` | `3` | fact-checker tool-calling iterations |
 
-### Tests
+---
+
+## 🤖 MCP Server: Perception in Claude, Cursor and other AI assistants
+
+The API also serves a [Model Context Protocol](https://modelcontextprotocol.io) server at **`/mcp`** (Streamable HTTP), built on the official `mcp` Python SDK 2.x. Teachers can review disputed grades, regrade, get a class misconception report and write new exams by chatting with their assistant. Students can ask for their progress and a study plan. Every MCP handler calls the same service layer as the REST API (`app/services/`), so roles and ownership are enforced in one place.
+
+| Kind | Name | Who | What it does |
+|---|---|---|---|
+| Resource | `perception://exams` | both | Exams you can see, with their `exam_id` (students never get model answers) |
+| Resource | `perception://rubrics/{exam_id}` | teacher | Question, model answer, rubric criteria, reference notes |
+| Resource | `perception://analytics/{exam_id}/summary` | teacher | Score histogram, AI-vs-teacher agreement, latency p50/p95, tokens, critic route/adjust rates, flag counts |
+| Resource | `perception://students/me/progress` | student | Your scores over time and trend |
+| Tool | `list_exams` | both | Exam ids for the other tools |
+| Tool | `get_flagged_submissions(exam_id, min_discrepancy, include_needs_review, limit)` | teacher | Where the Grader and Critic agents disagreed, largest gap first, with critic issues and per-criterion changes |
+| Tool | `regrade_submission(submission_id, updated_rubric_note)` | teacher | Reruns the grading graph with your note and streams progress per node. The old grade goes to `regrade_history`; your final score is never touched |
+| Tool | `generate_class_misconception_report(exam_id)` | teacher | Per-criterion average, share of students below half marks, grader notes from the weakest answers |
+| Tool | `draft_rubric(question, model_answer)` | teacher | Runs the Rubric Decomposer agent without saving anything |
+| Tool | `create_question_set(...)` | teacher | Publishes an exam (asks for confirmation via MCP elicitation when the client supports it) and reports unknown usernames |
+| Tool | `get_exam_rubric`, `get_exam_analytics` | teacher | Tool versions of the resources, for clients that don't let the model read resources itself |
+| Tool | `get_my_progress`, `get_improvement_plan(exam_id?)` | student | Trend, weak areas with the grader's reasons, and study pointers from notes the teacher shared |
+| Prompt | `review_flagged_grades`, `class_misconception_report`, `author_exam_question`, `my_improvement_plan` | | Ready-made workflows (slash commands in most clients) |
+
+### Connect an assistant
+
+1. Log in to Perception, open the profile menu and choose **Connect AI assistant**, then create a personal access token. It's shown once and acts as you, so a student token can only see that student's data.
+2. Add the server to your client:
+
+```bash
+# Claude Code
+claude mcp add --transport http perception http://localhost:8000/mcp --header "Authorization: Bearer pcp_..."
+```
+
+```jsonc
+// Cursor: ~/.cursor/mcp.json
+{ "mcpServers": { "perception": { "url": "http://localhost:8000/mcp",
+                                  "headers": { "Authorization": "Bearer pcp_..." } } } }
+```
+
+```jsonc
+// Claude Desktop (stdio): claude_desktop_config.json. DATABASE_URL and GROQ_API_KEY are read from api/.env
+{ "mcpServers": { "perception": {
+    "command": "/ABSOLUTE/PATH/api/.venv/bin/python",
+    "args": ["-m", "app.mcp_server"],
+    "env": { "PYTHONPATH": "/ABSOLUTE/PATH/api", "PERCEPTION_TOKEN": "pcp_..." } } } }
+```
+
+To explore it by hand, run `npx @modelcontextprotocol/inspector`, choose *Streamable HTTP*, enter `http://localhost:8000/mcp` and add the `Authorization` header.
+
+In production, set `PUBLIC_API_URL` to the deployed URL (for example `https://perception-api.onrender.com`). The MCP endpoint only accepts Host headers for localhost, `PUBLIC_API_URL` and `MCP_ALLOWED_HOSTS` (DNS-rebinding protection).
+
+### Security model
+- **Authentication:** personal access tokens (`pcp_…`, 256-bit random) are stored only as SHA-256 hashes. They expire, can be revoked, are tied to the user's role, and record when they were last used. The stdio entry point re-checks its token on every call, so revoking it takes effect immediately.
+- **Authorization:** every handler goes through `app/services/access.py`. Checks deny access whenever ownership can't be confirmed.
+- **Indirect prompt injection:** student answers reach the teacher's AI assistant, so they're returned inside `<untrusted_student_answer>` tags, and the server instructions tell the assistant never to act on them. Write tools are annotated as non-read-only, so clients ask for approval. A regrade can't set a score directly: it reruns the graph, which has its own injection defences.
+- **Data minimisation:** student tools never return model answers. The per-criterion breakdown is released only after the teacher finalizes the grade, and study pointers only quote notes the teacher marked `student_visible`.
+
+### Demo data
+
+```bash
+python -m scripts.seed_demo --synthetic   # no API key needed: realistic synthetic grading traces
+python -m scripts.seed_demo --reset       # or grade the answers with the real multi-agent graph (needs GROQ_API_KEY)
+```
+
+This creates `demo_teacher` and `demo_student1`–`6` (password `demo-password-123`), two exams with lecture notes, and ten graded answers covering strong, partial and wrong answers, an alternative method, a blocked injection and a subtle manipulation attempt. It finalizes some grades and prints a teacher token and a student token for MCP.
+
+---
+
+## 🧪 Tests
 
 ```bash
 pip install -r requirements-dev.txt
 pytest
 ```
-The graph tests use a scripted fake LLM, so routing, short-circuiting, clamping and leak sanitization are verified deterministically with no API key.
+
+- **Grading graph:** a scripted fake LLM checks routing, short-circuiting, clamping, leak sanitisation, teacher notes and progress callbacks.
+- **Auth, access control, analytics and REST routes:** run against an in-memory repository, with real JWTs and the real FastAPI routes.
+- **MCP:** an in-memory MCP client covers every tool, resource and prompt. Live uvicorn servers cover bearer auth, revocation, Host-header checks and the real FastAPI mount.
+- **Hermetic:** `tests/conftest.py` blanks `GROQ_API_KEY` and points `DATABASE_URL` at an unreachable address, so tests never spend API credits or touch a real database, even with a populated `.env`.
 
 ---
 
@@ -101,7 +179,8 @@ The legacy single-call grader (`app/services/ai_service.py`) protects the LLM ag
 - **Database:** MongoDB via [Motor](https://motor.readthedocs.io/) & [Beanie ODM](https://beanie-odm.dev/)
 - **AI Engine:** [Groq Cloud API](https://groq.com/) (`AsyncGroq`), orchestrated with [LangGraph](https://langchain-ai.github.io/langgraph/)
 - **Tools:** [SymPy](https://www.sympy.org/) (math verification), [pypdf](https://pypdf.readthedocs.io/) (lecture-note ingestion)
-- **Authentication:** Salted PBKDF2-SHA256 password hashing & custom header session tokens
+- **Authentication:** Salted PBKDF2-SHA256 password hashing, HS256 JWTs for the web app, hashed personal access tokens for MCP clients
+- **MCP:** [`mcp` Python SDK 2.x](https://github.com/modelcontextprotocol/python-sdk) (`MCPServer`, Streamable HTTP + stdio)
 
 ---
 
