@@ -58,10 +58,11 @@ export const useAuthStore = create(
       
       checkAuth: () => {
         const user = get().user;
-        if (user) {
+        // Sessions saved before JWT auth have no token: treat them as logged out
+        if (user && user.access_token) {
           set({ isAuthenticated: true, isLoading: false });
         } else {
-          set({ isLoading: false });
+          set({ user: null, isAuthenticated: false, isLoading: false });
         }
       },
     }),

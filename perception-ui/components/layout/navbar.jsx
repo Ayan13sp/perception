@@ -3,7 +3,7 @@
 import * as React from "react"
 import Link from "next/link"
 import { useTheme } from "next-themes"
-import { Moon, Sun, User, LogOut, LayoutDashboard } from "lucide-react"
+import { Moon, Sun, User, LogOut, LayoutDashboard, Bot } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -14,10 +14,12 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu"
 import { useAuthStore } from "@/store/auth"
+import { AiAccessDialog } from "@/components/settings/ai-access-dialog"
 
 export function Navbar() {
   const { setTheme } = useTheme()
   const { isAuthenticated, user, logout } = useAuthStore()
+  const [aiAccessOpen, setAiAccessOpen] = React.useState(false)
 
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -51,7 +53,9 @@ export function Navbar() {
           </DropdownMenu>
           
           {isAuthenticated && user ? (
-            <DropdownMenu>
+            <>
+            {/* modal={false}: avoids Radix leaving pointer-events disabled when a dialog opens from the menu */}
+            <DropdownMenu modal={false}>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" className="relative h-8 w-8 rounded-full">
                   <User className="h-5 w-5" />
@@ -79,6 +83,10 @@ export function Navbar() {
                     </Link>
                   </DropdownMenuItem>
                 )}
+                <DropdownMenuItem onSelect={() => setAiAccessOpen(true)}>
+                  <Bot className="mr-2 h-4 w-4" />
+                  <span>Connect AI assistant</span>
+                </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={logout}>
                   <LogOut className="mr-2 h-4 w-4" />
@@ -86,6 +94,8 @@ export function Navbar() {
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+            <AiAccessDialog open={aiAccessOpen} onOpenChange={setAiAccessOpen} />
+            </>
           ) : (
             <Button asChild>
               <Link href="/login">Login</Link>

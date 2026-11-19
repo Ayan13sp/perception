@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Optional, Annotated, List
 from beanie import Document, init_beanie, Link, Indexed, PydanticObjectId
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -54,10 +55,25 @@ class ReferenceChunk(Document):
         name = "reference_chunks"
         indexes = [IndexModel([("content", TEXT)], name="content_text")]
 
+class ApiToken(Document):
+    """Personal access token for MCP clients. Only the SHA-256 hash is stored."""
+    user_id: Annotated[PydanticObjectId, Indexed()]
+    name: str
+    token_hash: Annotated[str, Indexed(unique=True)]
+    prefix: str  # first characters, so users can tell tokens apart
+    role: str    # role at creation time; a role change invalidates the token
+    created_at: datetime
+    expires_at: Optional[datetime] = None
+    last_used_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+
+    class Settings:
+        name = "api_tokens"
+
 async def init_db():
     client = AsyncIOMotorClient(settings.DATABASE_URL)
     await init_beanie(
         database=client.get_default_database(),
-        document_models=[User, QuestionSet, Submission, ReferenceChunk]
+        document_models=[User, QuestionSet, Submission, ReferenceChunk, ApiToken]
     )
     print("Database initialized successfully with all models.")
