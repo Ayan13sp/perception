@@ -167,18 +167,22 @@ async def has_reference_material(question_set_id) -> bool:
     return await ReferenceChunk.find({"question_set_id": question_set_id}).count() > 0
 
 
-async def search_reference_material(question_set_id, query: str) -> dict:
+async def search_reference_material(question_set_id, query: str, student_only: bool = False) -> dict:
     """
     MongoDB $text search over this question set's uploaded material, with a
     keyword-overlap fallback if the text index is unavailable.
+    `student_only` restricts results to sources the teacher shared with students.
     """
     from app.db.database import ReferenceChunk
 
     query = (query or "")[:300]
+    scope: dict = {"question_set_id": question_set_id}
+    if student_only:
+        scope["student_visible"] = True
     hits: list[dict] = []
     try:
         hits = await ReferenceChunk.aggregate([
-            {"$match": {"question_set_id": question_set_id, "$text": {"$search": query}}},
+            {"$match": {**scope, "$text": {"$search": query}}},
             {"$addFields": {"score": {"$meta": "textScore"}}},
             {"$sort": {"score": -1}},
             {"$limit": _MAX_RESULTS},
@@ -186,7 +190,7 @@ async def search_reference_material(question_set_id, query: str) -> dict:
     except Exception as e:
         print(f"Text search unavailable, using keyword fallback: {e}")
         terms = set(_WORD.findall(query.lower()))
-        chunks = await ReferenceChunk.find({"question_set_id": question_set_id}).limit(300).to_list()
+        chunks = await ReferenceChunk.find(scope).limit(300).to_list()
         scored = []
         for c in chunks:
             overlap = len(terms & set(_WORD.findall(c.content.lower())))

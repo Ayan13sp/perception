@@ -15,6 +15,8 @@ class QuestionSetOut(BaseModel):
     model_answer: str
     creator: UserOut
     assigned_students: List[UserOut]
+    # Usernames from the request that didn't match a student (only set on create)
+    unknown_usernames: List[str] = []
 
     class Config:
         from_attributes = True
@@ -38,6 +40,7 @@ class ReferenceUploadOut(BaseModel):
     source_name: str
     chunks: int
     characters: int
+    student_visible: bool = False
 
 class ScoreUpdate(BaseModel):
     final_score: int = Field(..., ge=0, le=10)

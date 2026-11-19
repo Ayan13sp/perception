@@ -23,3 +23,8 @@ class ForbiddenError(DomainError):
 
 class InvalidRequestError(DomainError):
     status_code = 422
+
+
+class UpstreamError(DomainError):
+    """The LLM provider (or another dependency) failed."""
+    status_code = 502

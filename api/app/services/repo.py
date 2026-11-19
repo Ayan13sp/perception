@@ -75,3 +75,102 @@ async def list_user_tokens(user_id: PydanticObjectId) -> list[ApiToken]:
 
 async def update_token(token: ApiToken, fields: dict) -> None:
     await token.set(fields)
+
+
+# ───────────────────────────── exams ─────────────────────────────
+
+async def get_exam(exam_id: PydanticObjectId) -> Optional[QuestionSet]:
+    return await QuestionSet.get(exam_id)
+
+
+async def get_exams(exam_ids: Iterable[PydanticObjectId]) -> dict[PydanticObjectId, QuestionSet]:
+    ids = list({i for i in exam_ids if i is not None})
+    if not ids:
+        return {}
+    return {e.id: e for e in await QuestionSet.find({"_id": {"$in": ids}}).to_list()}
+
+
+async def list_teacher_exams(teacher_id: PydanticObjectId) -> list[QuestionSet]:
+    # Links are stored as DBRefs; older documents may hold a bare ObjectId
+    return await QuestionSet.find({"$or": [{"creator.$id": teacher_id}, {"creator": teacher_id}]}).to_list()
+
+
+async def list_open_or_assigned_exams(student_id: PydanticObjectId) -> list[QuestionSet]:
+    """Exams assigned to this student, plus exams with no assignment list (open to all)."""
+    return await QuestionSet.find({
+        "$or": [
+            {"assigned_students": {"$size": 0}},
+            {"assigned_students.$id": student_id},
+            {"assigned_students": student_id},
+        ]
+    }).to_list()
+
+
+async def create_exam(**fields) -> QuestionSet:
+    exam = QuestionSet(**fields)
+    await exam.insert()
+    return exam
+
+
+async def update_exam(exam: QuestionSet, fields: dict) -> None:
+    await exam.set(fields)
+
+
+# ─────────────────────────── submissions ───────────────────────────
+
+async def get_submission(submission_id: PydanticObjectId) -> Optional[Submission]:
+    return await Submission.get(submission_id)
+
+
+async def list_exam_submissions(exam_id: PydanticObjectId) -> list[Submission]:
+    return await Submission.find({"$or": [{"question_set.$id": exam_id}, {"question_set": exam_id}]}).to_list()
+
+
+async def list_exams_submissions(exam_ids: list[PydanticObjectId]) -> list[Submission]:
+    if not exam_ids:
+        return []
+    return await Submission.find({
+        "$or": [{"question_set.$id": {"$in": exam_ids}}, {"question_set": {"$in": exam_ids}}]
+    }).to_list()
+
+
+async def list_student_submissions(student_id: PydanticObjectId) -> list[Submission]:
+    return await Submission.find({"$or": [{"student.$id": student_id}, {"student": student_id}]}).to_list()
+
+
+async def create_submission(**fields) -> Submission:
+    submission = Submission(**fields)
+    await submission.insert()
+    return submission
+
+
+async def update_submission(submission: Submission, fields: dict) -> None:
+    await submission.set(fields)
+
+
+# ─────────────────────────── reference material ───────────────────────────
+
+async def list_reference_sources(exam_id: PydanticObjectId) -> list[dict]:
+    summary: dict[str, dict] = {}
+    for chunk in await ReferenceChunk.find({"question_set_id": exam_id}).to_list():
+        entry = summary.setdefault(chunk.source_name, {
+            "source_name": chunk.source_name, "chunks": 0, "characters": 0,
+            "student_visible": chunk.student_visible,
+        })
+        entry["chunks"] += 1
+        entry["characters"] += len(chunk.content)
+    return list(summary.values())
+
+
+async def replace_reference_source(exam_id: PydanticObjectId, source_name: str, chunks: list[str],
+                                   student_visible: bool) -> None:
+    await ReferenceChunk.find({"question_set_id": exam_id, "source_name": source_name}).delete()
+    await ReferenceChunk.insert_many([
+        ReferenceChunk(question_set_id=exam_id, source_name=source_name, chunk_index=i, content=c,
+                       student_visible=student_visible)
+        for i, c in enumerate(chunks)
+    ])
+
+
+async def delete_reference_source(exam_id: PydanticObjectId, source_name: str) -> None:
+    await ReferenceChunk.find({"question_set_id": exam_id, "source_name": source_name}).delete()

@@ -40,6 +40,8 @@ class Submission(Document):
     # Full audit trail of the grading graph: node path, per-criterion scores,
     # confidence, tool calls, critic verdict. Visible to teachers only.
     grading_trace: Optional[dict] = None
+    # Previous grades, appended on every regrade (newest last)
+    regrade_history: List[dict] = []
 
     class Settings:
         name = "submissions"
@@ -50,6 +52,9 @@ class ReferenceChunk(Document):
     source_name: str
     chunk_index: int
     content: str
+    # Students only see excerpts from sources the teacher marked as shareable
+    # (a teacher might upload an answer key as grading reference).
+    student_visible: bool = False
 
     class Settings:
         name = "reference_chunks"
