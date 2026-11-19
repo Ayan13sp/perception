@@ -4,14 +4,21 @@ from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 
 from app.db.database import init_db
+from app.mcp_server.server import build_server, transport_security
 from app.routes import auth_routes, core_routes
 from app.services.errors import DomainError
+
+# MCP server for AI assistants, served at /mcp (bearer personal access tokens)
+mcp_server = build_server(http_auth=True)
+mcp_app = mcp_server.streamable_http_app(streamable_http_path="/mcp", transport_security=transport_security())
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("Starting up...")
     await init_db()
-    yield
+    # A mounted sub-app's lifespan doesn't run, so start the MCP session manager here
+    async with mcp_server.session_manager.run():
+        yield
     print("Shutting down...")
 
 app = FastAPI(
@@ -41,4 +48,9 @@ app.include_router(core_routes.router, prefix="/api", tags=["Core API"])
 @app.get("/", tags=["Root"])
 async def read_root():
     return {"message": "Welcome to the Perception API!"}
+
+# Mounted last so every REST route above takes precedence. Mounting at "/" (rather than
+# "/mcp") keeps the endpoint at exactly /mcp, with no 307 trailing-slash redirect, and puts
+# the OAuth protected-resource metadata at the root /.well-known path.
+app.mount("/", mcp_app)
 

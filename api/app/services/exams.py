@@ -61,6 +61,29 @@ def _clean_usernames(usernames: Optional[list[str]]) -> list[str]:
     return out
 
 
+def validate_exam_input(title: str, question: str, model_answer: str,
+                        assigned_usernames: Optional[list[str]] = None) -> QuestionSetCreate:
+    try:
+        return QuestionSetCreate(title=title, question=question, model_answer=model_answer,
+                                 assigned_usernames=assigned_usernames)
+    except ValidationError as e:
+        raise InvalidRequestError(f"Invalid question set ({_first_error(e)}).")
+
+
+async def resolve_assignees(usernames: Optional[list[str]]) -> tuple[list[User], list[str]]:
+    """Match usernames to students. Returns (students, unknown_usernames)."""
+    cleaned = _clean_usernames(usernames)
+    students = await repo.find_students_by_usernames(cleaned)
+    found = {s.username for s in students}
+    unknown = [u for u in cleaned if u not in found]
+    if cleaned and not students:
+        # An empty assignment list means "open to every student": never let typos do that
+        raise InvalidRequestError(
+            f"None of these students exist: {', '.join(unknown)}. Not creating an exam open to everyone."
+        )
+    return students, unknown
+
+
 async def create_exam(
     teacher: User,
     *,
@@ -73,21 +96,8 @@ async def create_exam(
 ) -> tuple[QuestionSet, list[str]]:
     """Create an exam. Returns (exam, unknown_usernames)."""
     access.require_role(teacher, "teacher", "create question sets")
-    try:
-        data = QuestionSetCreate(title=title, question=question, model_answer=model_answer,
-                                 assigned_usernames=assigned_usernames)
-    except ValidationError as e:
-        raise InvalidRequestError(f"Invalid question set ({_first_error(e)}).")
-
-    usernames = _clean_usernames(data.assigned_usernames)
-    students = await repo.find_students_by_usernames(usernames)
-    found = {s.username for s in students}
-    unknown = [u for u in usernames if u not in found]
-    if usernames and not students:
-        # An empty assignment list means "open to every student": never let typos do that
-        raise InvalidRequestError(
-            f"None of these students exist: {', '.join(unknown)}. Not creating an exam open to everyone."
-        )
+    data = validate_exam_input(title, question, model_answer, assigned_usernames)
+    students, unknown = await resolve_assignees(data.assigned_usernames)
 
     if rubric_criteria:
         criteria = validate_rubric(rubric_criteria)
