@@ -26,9 +26,11 @@ class FakeLLM:
         self.grader_error = grader_error
         self.tool_calls = list(tool_calls or [])
         self.calls: list[str] = []
+        self.prompts: dict[str, list[str]] = {}
 
     async def chat_json(self, *, model, system, user, schema, **kw):
         self.calls.append(schema.__name__)
+        self.prompts.setdefault(schema.__name__, []).append(user)
         if schema is InjectionVerdict:
             return self.injection, 5
         if schema is Rubric:
@@ -159,3 +161,55 @@ async def test_model_answer_leak_is_sanitized(fake):
     fake(grader=grader(5, 4, 0.95, feedback=f"The answer is: {MODEL_ANSWER}"))
     out = await run("Plants make glucose.")
     assert MODEL_ANSWER not in out["feedback"]
+
+
+# ───────────────────── Phase 2: regrade support ─────────────────────
+
+async def test_teacher_note_reaches_grader_and_critic(fake):
+    f = fake(grader=grader(3, 4, 0.6), critic=CriticOutput(verdict="approve"))
+    note = "Accept 'sugar' as equivalent to glucose."
+    out = await run("Plants make sugar from light.", teacher_note=note)
+    for agent in ("GraderOutput", "CriticOutput"):
+        assert f"<teacher_instructions>\n{note}\n</teacher_instructions>" in f.prompts[agent][0]
+    assert out["trace"]["teacher_note"] == note
+
+
+async def test_no_teacher_block_without_note(fake):
+    f = fake(grader=grader(5, 4, 0.95))
+    await run("Plants make glucose.")
+    assert "<teacher_instructions>" not in f.prompts["GraderOutput"][0]
+
+
+async def test_trace_records_grader_vs_critic_discrepancy(fake):
+    adjusted = [CriterionScore(criterion_id="C1", awarded=5, justification="j", confidence=0.9),
+                CriterionScore(criterion_id="C2", awarded=4, justification="j", confidence=0.9)]
+    fake(grader=grader(3, 4, 0.6), critic=CriticOutput(verdict="adjust", adjusted_scores=adjusted))
+    trace = (await run("Plants use sunlight."))["trace"]
+    assert trace["grader_draft_score"] == 7 and trace["post_critic_score"] == 9
+    assert trace["score_discrepancy"] == 2.0
+    assert [c["awarded"] for c in trace["grader_criterion_scores"]] == [3, 4]  # pre-critic snapshot
+
+
+async def test_discrepancy_is_zero_when_critic_skipped(fake):
+    fake(grader=grader(5, 4, 0.95))
+    assert (await run("Plants make glucose."))["trace"]["score_discrepancy"] == 0.0
+
+
+async def test_progress_callback_reports_nodes_in_order(fake):
+    fake(grader=grader(3, 4, 0.6), critic=CriticOutput(verdict="approve"))
+    seen = []
+
+    async def on_node(name):
+        seen.append(name)
+
+    out = await run("Plants use sunlight.", on_node=on_node)
+    assert seen == out["trace"]["path"] == ["gatekeeper", "decompose_rubric", "grade", "critic", "finalize"]
+
+
+async def test_failing_progress_callback_does_not_break_grading(fake):
+    fake(grader=grader(5, 4, 0.95))
+
+    async def broken(name):
+        raise RuntimeError("client went away")
+
+    assert (await run("Plants make glucose.", on_node=broken))["score"] == 9

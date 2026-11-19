@@ -10,6 +10,7 @@ class GradingState(TypedDict, total=False):
     student_answer: str
     model_answer: str
     has_references: bool
+    teacher_note: Optional[str]  # trusted extra instructions from a regrade request
 
     # ── Gatekeeper ────────────────────────────────────────────────
     injection_suspected: bool  # regex pre-filter hit
@@ -24,6 +25,10 @@ class GradingState(TypedDict, total=False):
     # ── Primary grader ────────────────────────────────────────────
     criterion_scores: list[dict]  # [{criterion_id, awarded, max_points, justification, confidence}]
     draft_score: float
+    # Snapshot of the primary grader's output before any critic adjustment,
+    # so Grader-vs-Critic disagreement can be measured later.
+    grader_criterion_scores: list[dict]
+    grader_draft_score: float
     confidence_score: float
     borderline: bool
     feedback: str

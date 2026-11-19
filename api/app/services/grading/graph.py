@@ -55,6 +55,9 @@ def build_graph():
 GRADING_GRAPH = build_graph()
 
 
+ProgressCallback = Callable[[str], Awaitable[None]]
+
+
 async def run_grading_graph(
     *,
     question: str,
@@ -63,11 +66,16 @@ async def run_grading_graph(
     question_set_id: Optional[object] = None,
     rubric_criteria: Optional[list[dict]] = None,
     has_references: bool = False,
+    teacher_note: Optional[str] = None,
+    on_node: Optional[ProgressCallback] = None,
 ) -> dict:
     """
     Run the full pipeline. Returns:
         {score, feedback, rubric_criteria, rubric_generated, trace}
     where score == -1 signals an unrecoverable grading error.
+
+    `teacher_note` adds trusted instructions for the grader and critic (regrades).
+    `on_node` is awaited with each node's name as it finishes (progress reporting).
     """
     started = time.perf_counter()
     initial: GradingState = {
@@ -76,6 +84,7 @@ async def run_grading_graph(
         "student_answer": student_answer,
         "question_set_id": question_set_id,
         "has_references": has_references,
+        "teacher_note": (teacher_note or "").strip()[: nodes.MAX_TEACHER_NOTE] or None,
         "rubric_criteria": rubric_criteria or [],
         "retrieved_context": [],
         "audit_notes": [],
@@ -83,13 +92,32 @@ async def run_grading_graph(
         "total_tokens": 0,
         "needs_review": False,
     }
+    final: GradingState = initial
+    reported = 0
     try:
-        final = await GRADING_GRAPH.ainvoke(initial)
+        # stream_mode="values" yields the full state after every step; the last one is final
+        async for snapshot in GRADING_GRAPH.astream(initial, stream_mode="values"):
+            final = snapshot
+            steps = snapshot.get("trace", [])
+            if on_node and len(steps) > reported:
+                for step in steps[reported:]:
+                    try:
+                        await on_node(step["node"])
+                    except Exception as e:  # progress is best-effort, never fails grading
+                        print(f"Progress callback failed: {e}")
+                reported = len(steps)
     except Exception as e:
         print(f"Grading graph crashed: {e}")
         return {"score": -1, "feedback": f"AI evaluation error ({type(e).__name__}): {e}"}
 
     path = [t["node"] for t in final.get("trace", [])]
+    grader_draft = final.get("grader_draft_score")
+    post_critic = final.get("draft_score")
+    discrepancy = (
+        round(abs(post_critic - grader_draft), 2)
+        if "critic" in path and grader_draft is not None and post_critic is not None
+        else (0.0 if grader_draft is not None else None)
+    )
     trace = {
         "pipeline": "graph",
         "path": path,
@@ -102,6 +130,11 @@ async def run_grading_graph(
         "injection_flag": final.get("injection_flag", False),
         "rubric_criteria": final.get("rubric_criteria", []),
         "criterion_scores": final.get("criterion_scores", []),
+        "grader_criterion_scores": final.get("grader_criterion_scores", []),
+        "grader_draft_score": grader_draft,
+        "post_critic_score": post_critic,
+        "score_discrepancy": discrepancy,
+        "teacher_note": final.get("teacher_note"),
         "confidence_score": final.get("confidence_score"),
         "borderline": final.get("borderline", False),
         "routed_to_critic": "critic" in path,
