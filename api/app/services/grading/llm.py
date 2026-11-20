@@ -86,6 +86,14 @@ def get_client() -> AsyncGroq:
     return AsyncGroq(api_key=api_key, max_retries=0)
 
 
+_ORG_ID = re.compile(r"org_[A-Za-z0-9]+")
+
+
+def redact(message: str) -> str:
+    """Provider error messages embed the account's organisation id; never persist it."""
+    return _ORG_ID.sub("org_<redacted>", message)
+
+
 _RETRYABLE = (groq.RateLimitError, groq.APIConnectionError, groq.APITimeoutError, groq.InternalServerError)
 _DAILY_QUOTA = re.compile(r"per day|\(RPD\)|\(TPD\)", re.IGNORECASE)
 _TRY_AGAIN = re.compile(r"try again in (?:(\d+)m)?([\d.]+)s", re.IGNORECASE)
@@ -123,7 +131,7 @@ async def _create(purpose: str, **kwargs):
             except _RETRYABLE as e:
                 call.latency_ms += (time.perf_counter() - start) * 1000
                 if isinstance(e, groq.RateLimitError) and _DAILY_QUOTA.search(str(e)):
-                    raise BudgetExhausted(str(e)[:300]) from e
+                    raise BudgetExhausted(redact(str(e))[:300]) from e
                 if attempt == settings.LLM_MAX_ATTEMPTS:
                     raise
                 delay = _retry_delay(e, attempt)
@@ -143,7 +151,7 @@ async def _create(purpose: str, **kwargs):
                 call.server_total_ms = (getattr(usage, "total_time", 0) or 0) * 1000
             return completion, call
     except Exception as e:
-        call.error = f"{type(e).__name__}: {e}"[:300]
+        call.error = redact(f"{type(e).__name__}: {e}")[:300]
         e.llm_call = call  # lets callers mark JSON failures on the recorded call
         raise
     finally:
@@ -173,6 +181,7 @@ async def chat_json(
     temperature: float = 0.1,
     retries: int = 1,
     purpose: str = "json",
+    **extra,
 ) -> tuple[T, int]:
     """
     Call the model in JSON mode and validate the reply against `schema`.
@@ -186,7 +195,7 @@ async def chat_json(
     for _ in range(retries + 1):
         try:
             completion, call = await _create(purpose, model=model, messages=messages, temperature=temperature,
-                                             response_format={"type": "json_object"})
+                                             response_format={"type": "json_object"}, **extra)
         except groq.BadRequestError as e:
             if not is_json_generation_error(e):
                 raise

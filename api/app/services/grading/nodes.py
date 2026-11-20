@@ -104,6 +104,8 @@ async def classify_injection(text: str, model: Optional[str] = None) -> tuple[bo
         schema=InjectionVerdict,
         temperature=0.0,
         purpose="gatekeeper",
+        # Bounded output: providers reserve max_tokens against per-minute quotas up front
+        max_tokens=settings.GATEKEEPER_MAX_TOKENS,
     )
     return verdict.is_injection and verdict.confidence >= 0.7, verdict.confidence, verdict.reason, tokens
 

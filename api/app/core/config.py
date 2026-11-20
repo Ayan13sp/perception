@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     # Recall-first classifier whose flags route an answer to the critic and to teacher
     # review without blocking it. Empty string disables it.
     GATEKEEPER_AUDIT_MODEL: str = os.getenv("GATEKEEPER_AUDIT_MODEL", "openai/gpt-oss-20b")
+    # Output cap for JSON-verdict classifiers (reasoning + verdict use ~150-400 tokens)
+    GATEKEEPER_MAX_TOKENS: int = int(os.getenv("GATEKEEPER_MAX_TOKENS", 1000))
 
     # ── MCP server ────────────────────────────────────────────────
     # Public base URL of this API; the MCP endpoint is {PUBLIC_API_URL}/mcp

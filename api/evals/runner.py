@@ -21,7 +21,7 @@ from typing import Callable, Optional
 from app.core.config import settings
 from app.services.ai_service import contains_injection_heuristics, detect_model_answer_leak, get_ai_evaluation
 from app.services.grading import run_grading_graph, tools
-from app.services.grading.llm import record_calls
+from app.services.grading.llm import record_calls, redact
 from app.services.grading.nodes import classify_injection
 from evals.dataset import Dataset, Item, Question
 
@@ -263,7 +263,7 @@ DETECTOR_LIMITS = {
     "prompt-guard-22m": (28, 14000, 50),
     "prompt-guard-86m": (28, 14000, 50),
     "gpt-oss-20b": (28, 7000, 450),
-    "gpt-oss-safeguard-20b": (3, 1800, 450),
+    "gpt-oss-safeguard-20b": (3, 1800, 900),
 }
 
 
@@ -288,7 +288,7 @@ async def _bench_detector(name: str, model: Optional[str], items: list[Item], st
                     flagged, score, reason, _ = await classify_injection(item.answer, model=model)
                     record.update(pred=flagged, score=score, reason=reason[:200], error=None)
                 except Exception as e:
-                    record.update(pred=None, score=None, error=f"{type(e).__name__}: {str(e)[:200]}")
+                    record.update(pred=None, score=None, error=redact(f"{type(e).__name__}: {e}")[:200])
                 record["latency_ms"] = (time.perf_counter() - start) * 1000
             call_dicts = [c.to_dict() for c in calls]
             record["tokens"] = sum(rate_limited_tokens(c) for c in call_dicts)

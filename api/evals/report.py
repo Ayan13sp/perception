@@ -223,15 +223,15 @@ def render_markdown(report: dict, gates: Optional[list[dict]] = None) -> str:
         out += ["## Injection gatekeeper benchmark", "",
                 "Each detector classified every golden-set answer (adversarial = positive). "
                 "*Regex-gated* is the original architecture, where the classifier only runs after the regex fires.", "",
-                _row(["Detector", "Mode", "Precision", "Recall", "F1", "False-positive rate", "p50 latency", "p95 latency"]),
-                _row(["---"] * 8)]
+                _row(["Detector", "Mode", "Precision", "Recall", "F1", "False-positive rate", "Errors", "p50 latency", "p95 latency"]),
+                _row(["---"] * 9)]
         for name, entry in report["gatekeeper"].items():
             for mode in ("standalone", "regex_gated"):
                 if mode in entry:
                     d = entry[mode]
                     lat = d["latency_ms"]
                     out.append(_row([name, mode.replace("_", "-"), pct(d["precision"]), pct(d["recall"]), num(d["f1"], 3),
-                                     pct(d["false_positive_rate"]), secs(lat.get("p50")) if mode == "standalone" else "",
+                                     pct(d["false_positive_rate"]), str(d["errors"]), secs(lat.get("p50")) if mode == "standalone" else "",
                                      secs(lat.get("p95")) if mode == "standalone" else ""]))
         for name, entry in report["gatekeeper"].items():
             if "threshold_sweep" in entry:

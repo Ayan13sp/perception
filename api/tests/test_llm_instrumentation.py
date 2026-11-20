@@ -252,3 +252,13 @@ async def test_classifier_outage_never_fails_a_clean_answer(layered):
     verdicts.update(block=RuntimeError("down"), audit=RuntimeError("down"))
     out = await nodes.gatekeeper({"student_answer": CLEAN})
     assert out["injection_suspected"] is False and out["injection_flag"] is False
+
+
+async def test_provider_org_ids_are_redacted_from_recorded_errors(script):
+    message = "Rate limit reached for model `m` in organization `org_01abcDEF23` on tokens per minute (TPM)"
+    errors = [status_error(groq.RateLimitError, 429, message) for _ in range(settings.LLM_MAX_ATTEMPTS)]
+    script(*errors)
+    with record_calls() as calls:
+        with pytest.raises(groq.RateLimitError):
+            await llm.chat_text(model="m", messages=[])
+    assert "org_01abcDEF23" not in calls[0].error and "org_<redacted>" in calls[0].error
