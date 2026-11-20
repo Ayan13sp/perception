@@ -17,12 +17,26 @@ class Settings(BaseSettings):
     GRADING_PIPELINE: str = os.getenv("GRADING_PIPELINE", "graph")
     GRADER_MODEL: str = os.getenv("GRADER_MODEL", "openai/gpt-oss-120b")
     CRITIC_MODEL: str = os.getenv("CRITIC_MODEL", "openai/gpt-oss-120b")
-    GATEKEEPER_MODEL: str = os.getenv("GATEKEEPER_MODEL", "llama-3.1-8b-instant")
+    GATEKEEPER_MODEL: str = os.getenv("GATEKEEPER_MODEL", "meta-llama/llama-prompt-guard-2-86m")
     # Below this grader confidence, the Critic/Auditor agent reviews the draft
     CONFIDENCE_THRESHOLD: float = float(os.getenv("CONFIDENCE_THRESHOLD", 0.85))
     # Scores within ±0.5 of this mark are "borderline" and always audited
     PASS_MARK: float = float(os.getenv("PASS_MARK", 5.0))
     MAX_TOOL_ROUNDS: int = int(os.getenv("MAX_TOOL_ROUNDS", 3))
+    # The fact-checker's job is mechanical (rewrite maths for sympy, search notes): low
+    # reasoning effort cuts its tokens and latency. "" = provider default.
+    FACT_CHECK_REASONING_EFFORT: str = os.getenv("FACT_CHECK_REASONING_EFFORT", "low")
+    # Attempts per LLM call (retries rate limits and transient errors with backoff)
+    LLM_MAX_ATTEMPTS: int = int(os.getenv("LLM_MAX_ATTEMPTS", 3))
+    # Prompt-injection gatekeeper. GATEKEEPER_MODEL is the precision-first classifier that may block.
+    # "always" classifies every answer; "regex" only when the regex pre-filter fires
+    # (the regex alone caught 3 of 18 attacks in the golden-set benchmark).
+    GATEKEEPER_MODE: str = os.getenv("GATEKEEPER_MODE", "always")
+    # Score threshold for Prompt Guard models (they return a 0-1 injection probability)
+    GATEKEEPER_THRESHOLD: float = float(os.getenv("GATEKEEPER_THRESHOLD", 0.5))
+    # Recall-first classifier whose flags route an answer to the critic and to teacher
+    # review without blocking it. Empty string disables it.
+    GATEKEEPER_AUDIT_MODEL: str = os.getenv("GATEKEEPER_AUDIT_MODEL", "openai/gpt-oss-20b")
 
     # ── MCP server ────────────────────────────────────────────────
     # Public base URL of this API; the MCP endpoint is {PUBLIC_API_URL}/mcp

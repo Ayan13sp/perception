@@ -9,6 +9,10 @@ os.environ["GROQ_API_KEY"] = ""
 os.environ["DATABASE_URL"] = "mongodb://127.0.0.1:9/pytest-must-not-connect"
 os.environ["GRADING_PIPELINE"] = "graph"
 os.environ["PUBLIC_API_URL"] = "http://localhost:8000"
+# Graph tests script a JSON-verdict gatekeeper; Prompt Guard paths have their own tests
+os.environ["GATEKEEPER_MODEL"] = "openai/gpt-oss-20b"
+os.environ["GATEKEEPER_MODE"] = "regex"
+os.environ["GATEKEEPER_AUDIT_MODEL"] = ""
 
 import pytest  # noqa: E402
 

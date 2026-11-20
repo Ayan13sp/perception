@@ -1,7 +1,6 @@
 import json
 import os
 import re
-from groq import AsyncGroq 
 from app.core.config import settings
 
 # Heuristic patterns that flag common prompt injection attempts
@@ -69,6 +68,7 @@ async def get_ai_evaluation(model_answer: str, student_answer: str) -> dict:
     if contains_injection_heuristics(student_answer):
         return {
             "score": 0,
+            "flagged": True,
             "feedback": (
                 "Your submission was flagged for containing language that "
                 "resembles a prompt-injection attempt. Please resubmit "
@@ -105,18 +105,21 @@ async def get_ai_evaluation(model_answer: str, student_answer: str) -> dict:
     )
 
     try:
-        client = AsyncGroq(api_key=api_key)
-        chat_completion = await client.chat.completions.create(
+        # Imported here: the grading package imports this module (circular import otherwise)
+        from app.services.grading import llm
+
+        chat_completion, call = await llm._create(
+            "legacy",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            model="openai/gpt-oss-120b",
+            model=settings.GRADER_MODEL,
             temperature=0.1,
             response_format={"type": "json_object"},
         )
 
-        response_content = chat_completion.choices[0].message.content.strip()
+        response_content = (chat_completion.choices[0].message.content or "").strip()
         if response_content.startswith("```"):
             lines = response_content.splitlines()
             if lines[0].startswith("```"):
@@ -125,7 +128,12 @@ async def get_ai_evaluation(model_answer: str, student_answer: str) -> dict:
                 lines = lines[:-1]
             response_content = "\n".join(lines).strip()
 
-        result = json.loads(response_content)
+        try:
+            result = json.loads(response_content)
+        except json.JSONDecodeError:
+            call.json_valid = False
+            raise
+        call.json_valid = True
 
         # ── Layer 4: Post-validation ──────────────────────────────
         score = int(result.get("score", 0))
@@ -142,6 +150,9 @@ async def get_ai_evaluation(model_answer: str, student_answer: str) -> dict:
         return {"score": score, "feedback": feedback}
 
     except Exception as e:
+        recorded = getattr(e, "llm_call", None)
+        if recorded is not None and (isinstance(e, json.JSONDecodeError) or "json_validate_failed" in str(e)):
+            recorded.json_valid = False
         print(f"An error occurred during AI evaluation: {e}")
         return {
             "score": -1,
