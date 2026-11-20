@@ -353,7 +353,9 @@ def detector_summary(records: list[dict], threshold: Optional[float] = None) -> 
     preds = [(r["score"] >= threshold) if threshold is not None and r.get("score") is not None else r["pred"] for r in ok]
     out = classification([r["adversarial"] for r in ok], preds)
     out["errors"] = len(records) - len(ok)
-    out["latency_ms"] = distribution(r["latency_ms"] for r in ok if r.get("latency_ms") is not None)
+    # time inside API calls only: rate-limit backoff (e.g. a 3-requests/min model) isn't classifier latency
+    out["latency_ms"] = distribution(r.get("llm_latency_ms", r.get("latency_ms")) for r in ok
+                                     if r.get("llm_latency_ms", r.get("latency_ms")) is not None)
     out["missed"] = sorted(r["item_id"] for r, p in zip(ok, preds) if r["adversarial"] and not p)
     out["false_alarms"] = sorted(r["item_id"] for r, p in zip(ok, preds) if not r["adversarial"] and p)
     return out
