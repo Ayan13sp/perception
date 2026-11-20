@@ -250,8 +250,8 @@ def needs_fact_check(state: GradingState) -> bool:
 
 FACT_CHECK_SYSTEM = (
     "You are a meticulous fact-checker assisting an exam grader. You do NOT grade.\n"
-    "1. For every calculation, formula or numerical claim in the student answer, call "
-    "verify_calculation (rewrite it as sympy syntax, e.g. '2*x + 3 = 11' with values substituted).\n"
+    "1. Put every calculation, formula or numerical claim in the student answer into ONE "
+    "verify_calculation call (`expressions` list, sympy syntax, e.g. '2*x + 3 = 11' with values substituted).\n"
     "2. If the student uses a method, term or argument absent from the model answer and "
     "search_reference_material is available, search the lecture notes for it.\n"
     "3. Issue ALL the tool calls you need in a single response (they run in parallel); you have "
@@ -268,11 +268,12 @@ def summarise_tool_results(retrieved: list[dict]) -> str:
     for r in retrieved:
         out = r.get("output") or {}
         if r["tool"] == "verify_calculation":
-            if "holds" in out:
-                lines.append(f"- {out.get('expression')}: {'holds' if out['holds'] else 'does NOT hold'}"
-                             + (" (approximately equal)" if out.get("approximately_equal") and not out["holds"] else ""))
-            else:
-                lines.append(f"- {out.get('expression')}: {out.get('numeric') or out.get('result') or out.get('error')}")
+            for check in out.get("results", [out]):
+                if "holds" in check:
+                    lines.append(f"- {check.get('expression')}: {'holds' if check['holds'] else 'does NOT hold'}"
+                                 + (" (approximately equal)" if check.get("approximately_equal") and not check["holds"] else ""))
+                else:
+                    lines.append(f"- {check.get('expression')}: {check.get('numeric') or check.get('result') or check.get('error')}")
         else:
             lines.append(f"- lecture-notes search '{out.get('query')}': {len(out.get('results', []))} excerpt(s) found")
     return "\n".join(lines)
@@ -286,7 +287,10 @@ async def fact_check(state: GradingState) -> dict:
 
     async def run_tool(name: str, args: dict) -> dict:
         if name == "verify_calculation":
-            return await tools.verify_calculation(str(args.get("expression", "")))
+            expressions = args.get("expressions") or ([args["expression"]] if args.get("expression") else [])
+            if isinstance(expressions, str):
+                expressions = [expressions]
+            return await tools.verify_calculations([str(e) for e in expressions])
         if name == "search_reference_material" and state.get("has_references"):
             # question_set_id is injected server-side: the model cannot read other courses
             return await tools.search_reference_material(qs_id, str(args.get("query", "")))

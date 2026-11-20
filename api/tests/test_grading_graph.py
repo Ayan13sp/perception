@@ -137,12 +137,12 @@ async def test_rubric_is_generated_when_not_cached(fake):
 
 
 async def test_math_answer_triggers_tool_calling_fact_check(fake):
-    fake(grader=grader(5, 5, 0.95), tool_calls=[("verify_calculation", '{"expression": "6*7 = 42"}')])
+    fake(grader=grader(5, 5, 0.95), tool_calls=[("verify_calculation", '{"expressions": ["6*7 = 42", "6*7 = 41"]}')])
     out = await run("Rate is 6*7 = 42 units of glucose.")
     assert "fact_check" in out["trace"]["path"]
     ctx = out["trace"]["retrieved_context"]
     assert ctx[0]["tool"] == "verify_calculation"
-    assert ctx[0]["output"]["holds"] is True
+    assert [check["holds"] for check in ctx[0]["output"]["results"]] == [True, False]  # one batched call
 
 
 async def test_grader_failure_returns_error_sentinel(fake):
@@ -250,8 +250,8 @@ async def test_fact_check_survives_tool_call_on_final_round(monkeypatch):
 def test_tool_result_summary_covers_both_tools():
     from app.services.grading.nodes import summarise_tool_results
     text = summarise_tool_results([
-        {"tool": "verify_calculation", "output": {"expression": "2+2 = 5", "holds": False}},
-        {"tool": "verify_calculation", "output": {"expression": "sqrt(2) = 1.414", "holds": False, "approximately_equal": True}},
+        {"tool": "verify_calculation", "output": {"results": [{"expression": "2+2 = 5", "holds": False},
+            {"expression": "sqrt(2) = 1.414", "holds": False, "approximately_equal": True}]}},
         {"tool": "search_reference_material", "output": {"query": "average velocity", "results": [{}, {}]}},
     ])
     assert "2+2 = 5: does NOT hold" in text and "(approximately equal)" in text and "2 excerpt(s)" in text
