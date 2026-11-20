@@ -144,3 +144,36 @@ def test_regex_gating_limits_recall_to_regex_hits():
     regex = [det("a1", True, True), det("a2", True, False), det("b1", False, True)]
     gated = metrics.detector_summary(metrics.gated_by_regex(classifier, regex))
     assert gated["recall"] == 0.5 and gated["false_positive_rate"] == 1.0
+
+
+# ───────────────────────────── uncertainty ─────────────────────────────
+
+def _paired(graph_err: int, legacy_err: int, n: int = 30):
+    rows = []
+    for i in range(n):
+        ref = i % 11
+        rows.append(rec(min(10, ref + (graph_err if i % 2 else 0)), ref, item=f"q{i}", pipeline="graph"))
+        rows.append(rec(min(10, max(0, ref - legacy_err)), ref, item=f"q{i}", pipeline="legacy"))
+    return rows
+
+
+def test_bootstrap_interval_brackets_the_estimate_and_is_reproducible():
+    rows = [r for r in _paired(1, 2) if r["pipeline"] == "graph"]
+    ci = metrics.confidence_intervals(rows, resamples=300)
+    point = metrics.accuracy(rows)["mae"]
+    lo, hi = ci["accuracy.mae"]
+    assert lo <= point <= hi and lo < hi
+    assert metrics.confidence_intervals(rows, resamples=300) == ci  # seeded
+
+
+def test_paired_comparison_detects_a_real_difference():
+    comp = metrics.paired_comparison(_paired(graph_err=1, legacy_err=3), resamples=300)
+    assert comp["items"] == 30
+    mae = comp["mae"]
+    assert mae["difference"] < 0 and mae["ci95"][1] < 0  # graph clearly better: interval excludes 0
+
+
+def test_paired_comparison_reports_no_difference_when_identical():
+    rows = _paired(0, 0)
+    comp = metrics.paired_comparison(rows, resamples=300)
+    assert comp["mae"]["difference"] == 0 and comp["mae"]["ci95"] == (0, 0)

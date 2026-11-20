@@ -363,3 +363,82 @@ def gated_by_regex(classifier: list[dict], regex: list[dict]) -> list[dict]:
     """The production 'regex' gatekeeper mode: the classifier only blocks when the regex fired first."""
     fired = {r["item_id"] for r in regex if r["pred"]}
     return [{**r, "pred": bool(r["pred"]) and r["item_id"] in fired, "score": None} for r in classifier]
+
+
+# ───────────────────────────── uncertainty ─────────────────────────────
+
+def by_item(records: list[dict]) -> list[list[dict]]:
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for r in records:
+        groups[r["item_id"]].append(r)
+    return list(groups.values())
+
+
+def bootstrap_ci(groups: list[list[dict]], stat, resamples: int = 2000, seed: int = 7) -> Optional[tuple[float, float]]:
+    """
+    95% percentile-bootstrap interval for `stat`, resampling whole items (cluster
+    bootstrap) so repeated runs of one answer aren't treated as independent.
+    """
+    import random
+    if len(groups) < 2:
+        return None
+    rng = random.Random(seed)
+    values = []
+    for _ in range(resamples):
+        sample = [r for g in (rng.choice(groups) for _ in groups) for r in g]
+        value = stat(sample)
+        if value is not None:
+            values.append(value)
+    if not values:
+        return None
+    return percentile(values, 2.5), percentile(values, 97.5)
+
+
+def _stat(path: str):
+    section, key = path.split(".")
+    funcs = {"accuracy": accuracy, "robustness": robustness}
+
+    def compute(records):
+        return funcs[section](records).get(key)
+    return compute
+
+
+def confidence_intervals(records: list[dict], resamples: int = 2000) -> dict:
+    items = by_item(valid(records))
+    adversarial = by_item([r for r in valid(records) if r["adversarial"]])
+    return {
+        "accuracy.qwk": bootstrap_ci(items, _stat("accuracy.qwk"), resamples),
+        "accuracy.mae": bootstrap_ci(items, _stat("accuracy.mae"), resamples),
+        "accuracy.within_1_rate": bootstrap_ci(items, _stat("accuracy.within_1_rate"), resamples),
+        "robustness.attack_success_rate": bootstrap_ci(adversarial, _stat("robustness.attack_success_rate"), resamples),
+    }
+
+
+def paired_comparison(records: list[dict], a: str = "graph", b: str = "legacy", resamples: int = 2000) -> dict:
+    """Differences a - b on items graded by both pipelines, with item-level bootstrap intervals."""
+    rs = valid(records)
+    both = {r["item_id"] for r in rs if r["pipeline"] == a} & {r["item_id"] for r in rs if r["pipeline"] == b}
+    paired = [r for r in rs if r["item_id"] in both and r["pipeline"] in (a, b)]
+    groups = by_item(paired)
+    adv_groups = by_item([r for r in paired if r["adversarial"]])
+
+    def diff(section: str, key: str):
+        stat = _stat(f"{section}.{key}")
+
+        def compute(sample):
+            x = stat([r for r in sample if r["pipeline"] == a])
+            y = stat([r for r in sample if r["pipeline"] == b])
+            return None if x is None or y is None else x - y
+        return compute
+
+    out = {"items": len(both)}
+    for name, (section, key, pool) in {
+        "mae": ("accuracy", "mae", groups),
+        "qwk": ("accuracy", "qwk", groups),
+        "within_1_rate": ("accuracy", "within_1_rate", groups),
+        "attack_success_rate": ("robustness", "attack_success_rate", adv_groups),
+    }.items():
+        fn = diff(section, key)
+        point = fn(paired if pool is groups else [r for r in paired if r["adversarial"]])
+        out[name] = {"difference": point, "ci95": bootstrap_ci(pool, fn, resamples)}
+    return out

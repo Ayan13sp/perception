@@ -25,8 +25,11 @@ def build_report(run_dir: Path) -> dict:
 
     report: dict[str, Any] = {
         "meta": meta,
-        "pipelines": {name: metrics.summarize(rs) for name, rs in sorted(by_pipeline.items())},
+        "pipelines": {name: {**metrics.summarize(rs), "ci95": metrics.confidence_intervals(rs)}
+                      for name, rs in sorted(by_pipeline.items())},
     }
+    if "graph" in by_pipeline and "legacy" in by_pipeline:
+        report["comparison"] = metrics.paired_comparison(results)
 
     gatekeeper = _load_jsonl(run_dir / "gatekeeper.jsonl")
     if gatekeeper:
@@ -87,6 +90,13 @@ def secs(ms: Optional[float]) -> str:
     return "n/a" if ms is None else f"{ms / 1000:.2f} s"
 
 
+def with_ci(value, interval, digits: int = 2, as_pct: bool = False) -> str:
+    fmt = (lambda v: pct(v)) if as_pct else (lambda v: num(v, digits))
+    if value is None:
+        return "n/a"
+    return fmt(value) if not interval else f"{fmt(value)} [{fmt(interval[0])}–{fmt(interval[1])}]"
+
+
 def _row(cells: list[str]) -> str:
     return "| " + " | ".join(cells) + " |"
 
@@ -108,13 +118,17 @@ def render_markdown(report: dict, gates: Optional[list[dict]] = None) -> str:
         def lat(n, key):
             return _lookup(pipes[n], f"latency.service_ms.{key}")
 
+        def ci(n, key):
+            return (pipes[n].get("ci95") or {}).get(key)
+
         rows = [
             ("Runs", lambda n: str(pipes[n]["runs"])),
-            ("Agreement with reference (QWK)", lambda n: num(get(n, "accuracy.qwk"), 3)),
-            ("Mean absolute error (points / 10)", lambda n: num(get(n, "accuracy.mae"))),
+            ("Agreement with reference (QWK)", lambda n: with_ci(get(n, "accuracy.qwk"), ci(n, "accuracy.qwk"), 3)),
+            ("Mean absolute error (points / 10)", lambda n: with_ci(get(n, "accuracy.mae"), ci(n, "accuracy.mae"))),
             ("Within ±1 point of reference", lambda n: pct(get(n, "accuracy.within_1_rate"))),
             ("Benign answers: QWK", lambda n: num(get(n, "accuracy_benign.qwk"), 3)),
-            ("Attack success rate (score inflated ≥3)", lambda n: pct(get(n, "robustness.attack_success_rate"))),
+            ("Attack success rate (score inflated ≥3)",
+             lambda n: with_ci(get(n, "robustness.attack_success_rate"), ci(n, "robustness.attack_success_rate"), as_pct=True)),
             ("Adversarial answers caught or flagged", lambda n: pct(get(n, "robustness.caught_rate"))),
             ("Benign answers wrongly blocked", lambda n: pct(get(n, "robustness.benign_block_rate"))),
             ("JSON validity (model responses)", lambda n: pct(get(n, "json.valid_rate"), 2)),
@@ -127,6 +141,22 @@ def render_markdown(report: dict, gates: Optional[list[dict]] = None) -> str:
         out += ["## Headline", "", _row(["Metric"] + [label.get(n, n) for n in names]),
                 _row(["---"] * (len(names) + 1))]
         out += [_row([title] + [fn(n) for n in names]) for title, fn in rows]
+        out += ["", "_Brackets: 95% bootstrap confidence interval, resampling answers._", ""]
+
+    comp = report.get("comparison")
+    if comp and comp.get("items"):
+        out += [f"## Graph vs baseline, paired on {comp['items']} answers graded by both", "",
+                _row(["Metric", "Graph minus baseline", "95% CI", "Significant?"]), _row(["---"] * 4)]
+        for key, title, as_pct in (("mae", "MAE (negative = graph more accurate)", False),
+                                   ("qwk", "QWK (positive = graph agrees more)", False),
+                                   ("within_1_rate", "Within ±1 (positive = better)", True),
+                                   ("attack_success_rate", "Attack success rate (negative = more robust)", True)):
+            d = comp[key]
+            interval = d["ci95"]
+            sig = "n/a" if interval is None else ("yes" if interval[0] > 0 or interval[1] < 0 else "no")
+            fmt = (lambda v: pct(v)) if as_pct else (lambda v: num(v, 3))
+            out.append(_row([title, fmt(d["difference"]),
+                             "n/a" if interval is None else f"[{fmt(interval[0])}, {fmt(interval[1])}]", sig]))
         out.append("")
 
     for n in names:
