@@ -3,6 +3,7 @@
 <div align="center">
 
 [![Live Demo](https://img.shields.io/badge/Live_Demo-Vercel-black?style=for-the-badge&logo=vercel)](https://ai-evaluation-plat4m.vercel.app)
+[![CI](https://github.com/Ayan13sp/perception/actions/workflows/ci.yml/badge.svg)](https://github.com/Ayan13sp/perception/actions/workflows/ci.yml)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.1.0-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Next.js](https://img.shields.io/badge/Next.js-15-black?style=for-the-badge&logo=next.js&logoColor=white)](https://nextjs.org/)
 [![Groq](https://img.shields.io/badge/Groq_API-LPU_Inference-F05A28?style=for-the-badge&logo=lightning&logoColor=white)](https://groq.com)
@@ -25,6 +26,23 @@ Grading descriptive examinations manually is one of the most time-consuming bott
 2. **Lack of Human Oversight:** Purely automated grading alienates educators and offers no fallback when edge cases occur.
 
 **Perception** solves both challenges by combining **low-latency Groq LLM inference**, a **4-tier prompt-injection defense pipeline**, and a **teacher-in-the-loop review station** where educators can inspect, adjust, and finalize AI suggestions.
+
+---
+
+## 📊 Evaluation
+
+Every change to the grader is measured against a hand-labelled **golden dataset of 66 answers**: 6 questions across 5 subjects, plus **18 distinct prompt-injection attacks**. The harness (`python -m evals`) runs the real models and compares the multi-agent graph with the original single-call grader on the same answers.
+
+| On 61 answers, with 95% CIs | Multi-agent graph | Single-call baseline |
+|---|---|---|
+| Agreement with reference marks (QWK) | **0.975** [0.950–0.990] | 0.727 [0.521–0.900] |
+| Mean absolute error (points / 10) | **0.43** | 1.43 |
+| Attack success rate | **0%** | 5.9% |
+| Honest answers wrongly blocked | **0%** | 9.1% |
+| JSON validity | 100% | 100% |
+| Latency p50 / p95 | 3.1 s / 5.0 s | 0.9 s / 1.5 s |
+
+The paired MAE reduction of 1.00 point [0.38–1.67] is statistically significant. A 5-detector benchmark chose the layered injection gatekeeper: the regex alone caught 3 of 18 attacks, and the policy-prompted classifier catches 72%. CI runs the test suite on every push and the live eval weekly, with quality gates. Details: [method](api/evals/README.md) · [full report](api/evals/results/golden-v1/report.md)
 
 ---
 

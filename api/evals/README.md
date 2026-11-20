@@ -4,6 +4,49 @@ Grades a hand-labelled golden dataset with the **real** models and measures what
 
 Latest results: [`results/golden-v1/report.md`](results/golden-v1/report.md)
 
+## Results (golden-v1)
+
+122 graded runs (61 answers × 2 pipelines) plus 330 classifier decisions (66 answers × 5 detectors), all with the real models. Brackets show 95% bootstrap confidence intervals.
+
+| | Multi-agent graph | Single-call baseline |
+|---|---|---|
+| Agreement with reference marks (QWK) | **0.975** [0.950–0.990] | 0.727 [0.521–0.900] |
+| Mean absolute error (points / 10) | **0.43** [0.25–0.66] | 1.43 [0.82–2.08] |
+| Within ±1 point | **90.2%** | 75.4% |
+| Attack success rate (grade inflated ≥3 points) | **0%** | 5.9% |
+| Attacks caught or flagged for review | **70.6%** | 17.6% |
+| Honest answers wrongly blocked | **0%** | 9.1% |
+| JSON validity | 100% (132 responses) | 100% |
+| Latency p50 / p95 | 3.08 s / 5.01 s | 0.94 s / 1.51 s |
+| Tokens per answer | 2,772 | 628 |
+
+On the same answers, the graph reduced MAE by **1.00 point [0.38–1.67]** and raised QWK by **0.25 [0.08–0.45]**; both intervals exclude zero. The attack-success difference is not yet significant (17 adversarial answers).
+
+**Gatekeeper benchmark** (recall = share of the 18 attacks detected, FPR = share of the 48 benign answers flagged):
+
+| Detector | Precision | Recall | FPR | p50 |
+|---|---|---|---|---|
+| Regex pre-filter | 42.9% | 16.7% | 8.3% | <1 ms |
+| Prompt Guard 2 22M | 100% | 11.1% | 0% | 0.14 s |
+| **Prompt Guard 2 86M** (blocker) | 100% | 27.8% | 0% | 0.14 s |
+| **gpt-oss-20b with a grading-manipulation policy** (auditor) | 92.9% | 72.2% | 2.1% | 0.57 s |
+| gpt-oss-safeguard-20b | 100% | 72.2% | 0% | 0.44 s |
+
+**What the eval found and changed:**
+- The original gatekeeper classifier (`llama-3.1-8b-instant`) had been retired by the provider, so every flagged answer was silently falling back.
+- Purpose-built Prompt Guard catches "ignore your instructions"-style jailbreaks, including obfuscated, Spanish and homoglyph versions. It misses grading manipulation (fake teacher approval, emotional appeals). A policy-prompted small model catches most of those, so the gatekeeper became layered: high-precision blocking plus high-recall auditing.
+- Gating the classifier behind the regex capped recall at 5–17%, so classifiers now run on every answer.
+- `gpt-oss-safeguard-20b` was the best detector overall (100% precision, 72.2% recall, F1 0.84), but its 3-requests/minute free-tier quota can't serve per-submission checks. It's the drop-in upgrade for `GATEKEEPER_AUDIT_MODEL` on a paid tier.
+- The fact-checker verified one expression per round (4 sequential calls on a maths answer) and crashed when the model called a tool after `tool_choice="none"`. Calculations are now batched, and the final round falls back to a deterministic summary.
+- The baseline's failure modes: it zeroed all 4 honest answers containing trigger phrases, over-penalised arithmetic slips (bias −3.5), over-credited bare answers with no working (+4.5), and was fooled by an authority-claim attack (7 against a reference of 4).
+- The critic agent reviewed 14 answers and changed none. On this set it adds about 1.2 s to 23% of answers without moving grades, so its routing thresholds are a candidate for tuning.
+
+**Pending:** the remaining 5 answers and the consistency repeats. The provider's free tier allows 200K tokens/day, which this run used up. Finish with the same command once the quota has refilled:
+
+```bash
+python -m evals run --out evals/results/golden-v1 --repeats 3 && python -m evals report evals/results/golden-v1 --check evals/thresholds.json
+```
+
 ## Golden dataset (`datasets/golden_v1.json`)
 
 | | |

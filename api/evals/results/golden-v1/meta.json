@@ -1,0 +1,27 @@
+{
+  "created_at": "2026-11-20T05:05:51+00:00",
+  "dataset": "perception-golden@1.0",
+  "updated_at": "2026-11-20T06:32:07+00:00",
+  "git_sha": "358c956",
+  "python": "3.11.15",
+  "config": {
+    "grader_model": "openai/gpt-oss-120b",
+    "critic_model": "openai/gpt-oss-120b",
+    "gatekeeper_model": "llama-3.1-8b-instant",
+    "gatekeeper_mode": "always",
+    "gatekeeper_threshold": 0.5,
+    "confidence_threshold": 0.85,
+    "pass_mark": 5.0,
+    "max_tool_rounds": 3
+  },
+  "pipelines": [
+    "graph",
+    "legacy"
+  ],
+  "repeats": 3,
+  "items": 66,
+  "status": "budget_exhausted",
+  "gatekeeper_detectors": [
+    "gpt-oss-safeguard-20b"
+  ]
+}
