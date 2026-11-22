@@ -15,6 +15,7 @@ class GradingState(TypedDict, total=False):
     # ── Gatekeeper ────────────────────────────────────────────────
     injection_suspected: bool  # regex pre-filter hit
     injection_flag: bool       # confirmed by the classifier -> short-circuit
+    injection_score: Optional[float]  # classifier score/confidence, when it ran
 
     # ── Decomposer / fact-checker ─────────────────────────────────
     rubric_criteria: list[dict]  # [{id, description, points}], points sum to 10

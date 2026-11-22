@@ -47,9 +47,9 @@ graph TD;
 
 | Node | Model | Role |
 |---|---|---|
-| **Gatekeeper** | regex + `llama-3.1-8b-instant` | Regex pre-filter; on a hit, a fast classifier confirms the injection. Confirmed attacks are blocked **before any grading tokens are spent**. Regex false positives (e.g. *"enzymes act as a catalyst"*) continue with a mandatory audit. |
+| **Gatekeeper** | Prompt Guard 2 86M + `gpt-oss-20b` | Two classifiers run concurrently on every answer. The precision-first one (0 false positives in the benchmark) is the only one allowed to block, and it blocks **before any grading tokens are spent**. Flags from the recall-first one, or the regex, send the answer to the critic and to teacher review instead of zeroing it. Picked by a [5-detector benchmark](evals/results/golden-v1/report.md#injection-gatekeeper-benchmark): the regex alone caught 3 of 18 attacks. |
 | **Rubric Decomposer** | `gpt-oss-120b` | Splits the model answer into 2-6 atomic, weighted criteria (normalized to 10 pts). **Cached on the QuestionSet** and invalidated by a hash of the model answer. |
-| **Fact-Checker** (tool calling) | `gpt-oss-120b` | Function-calling agent with two Python tools: `verify_calculation` (sympy) and `search_reference_material` (MongoDB `$text` search over uploaded lecture notes). Skipped when the answer has no math and no notes exist. |
+| **Fact-Checker** (tool calling) | `gpt-oss-120b` (low reasoning effort) | Function-calling agent with two Python tools: `verify_calculation` (sympy, all of a student's working checked in one batched call) and `search_reference_material` (MongoDB `$text` search over uploaded lecture notes). Skipped when the answer has no math and no notes exist. |
 | **Primary Grader** | `gpt-oss-120b` | Scores each criterion independently: Pydantic-validated JSON with `awarded`, `justification`, `confidence`. |
 | **Critic / Auditor** | `gpt-oss-120b` | Adversarial review: too harsh? missed partial credit? too lenient? manipulated? Approves or adjusts, and flags large swings for teacher review. |
 | **Finalize** | — | Clamps the score, runs the model-answer leak check, and assembles the audit trail. |
@@ -74,7 +74,10 @@ graph TD;
 |---|---|---|
 | `GRADING_PIPELINE` | `graph` | `legacy` = original single-call grader (handy for A/B comparison) |
 | `GRADER_MODEL` / `CRITIC_MODEL` | `openai/gpt-oss-120b` | |
-| `GATEKEEPER_MODEL` | `llama-3.1-8b-instant` | |
+| `GATEKEEPER_MODEL` | `meta-llama/llama-prompt-guard-2-86m` | precision-first classifier: the only one that can block |
+| `GATEKEEPER_AUDIT_MODEL` | `openai/gpt-oss-20b` | recall-first classifier: routes to critic + teacher review |
+| `GATEKEEPER_MODE` | `always` | `regex` = classify only after a regex hit |
+| `FACT_CHECK_REASONING_EFFORT` | `low` | |
 | `CONFIDENCE_THRESHOLD` | `0.85` | below this, the critic runs |
 | `PASS_MARK` | `5.0` | scores within ±0.5 are borderline and audited |
 | `MAX_TOOL_ROUNDS` | `3` | fact-checker tool-calling iterations |
@@ -145,6 +148,21 @@ python -m scripts.seed_demo --reset       # or grade the answers with the real m
 This creates `demo_teacher` and `demo_student1`–`6` (password `demo-password-123`), two exams with lecture notes, and ten graded answers covering strong, partial and wrong answers, an alternative method, a blocked injection and a subtle manipulation attempt. It finalizes some grades and prints a teacher token and a student token for MCP.
 
 ---
+
+## 📊 Evaluation
+
+`python -m evals` grades a 66-answer golden dataset (18 prompt-injection attacks included) with the real models and compares the graph with the original single-call grader. See [`evals/README.md`](evals/README.md) for the method and [`evals/results/golden-v1/report.md`](evals/results/golden-v1/report.md) for the full report.
+
+| On 61 answers (95% CI) | Multi-agent graph | Single-call baseline |
+|---|---|---|
+| Agreement with reference marks (QWK) | **0.975** [0.950–0.990] | 0.727 [0.521–0.900] |
+| Mean absolute error (points / 10) | **0.43** [0.25–0.66] | 1.43 [0.82–2.08] |
+| Within ±1 point | **90.2%** | 75.4% |
+| Attack success rate | **0%** | 5.9% |
+| Honest answers wrongly blocked | **0%** | 9.1% |
+| JSON validity | 100% | 100% |
+| Latency p50 / p95 | 3.08 s / 5.01 s | 0.94 s / 1.51 s |
+| Tokens per answer | 2,772 | 628 |
 
 ## 🧪 Tests
 

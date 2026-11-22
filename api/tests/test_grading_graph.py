@@ -43,7 +43,7 @@ class FakeLLM:
             return self.critic, 15
         raise AssertionError(schema)
 
-    async def chat_with_tools(self, *, model, messages, tools, tool_choice="auto"):
+    async def chat_with_tools(self, *, model, messages, tools, tool_choice="auto", **kw):
         self.calls.append("tools")
         if self.tool_calls and tool_choice == "auto":
             name, args = self.tool_calls.pop(0)
@@ -137,12 +137,12 @@ async def test_rubric_is_generated_when_not_cached(fake):
 
 
 async def test_math_answer_triggers_tool_calling_fact_check(fake):
-    fake(grader=grader(5, 5, 0.95), tool_calls=[("verify_calculation", '{"expression": "6*7 = 42"}')])
+    fake(grader=grader(5, 5, 0.95), tool_calls=[("verify_calculation", '{"expressions": ["6*7 = 42", "6*7 = 41"]}')])
     out = await run("Rate is 6*7 = 42 units of glucose.")
     assert "fact_check" in out["trace"]["path"]
     ctx = out["trace"]["retrieved_context"]
     assert ctx[0]["tool"] == "verify_calculation"
-    assert ctx[0]["output"]["holds"] is True
+    assert [check["holds"] for check in ctx[0]["output"]["results"]] == [True, False]  # one batched call
 
 
 async def test_grader_failure_returns_error_sentinel(fake):
@@ -213,3 +213,45 @@ async def test_failing_progress_callback_does_not_break_grading(fake):
         raise RuntimeError("client went away")
 
     assert (await run("Plants make glucose.", on_node=broken))["score"] == 9
+
+
+# ───────────────────── fact-checker robustness ─────────────────────
+
+async def test_fact_check_survives_tool_call_on_final_round(monkeypatch):
+    """gpt-oss sometimes calls a tool when told not to: keep the evidence, summarise it ourselves."""
+    import groq
+    import httpx
+    from app.core.config import settings
+    from app.services.grading import nodes
+
+    rounds = []
+
+    async def chat_with_tools(*, model, messages, tools, tool_choice="auto", **kw):
+        rounds.append((tool_choice, kw.get("reasoning_effort")))
+        if tool_choice == "none":
+            request = httpx.Request("POST", "https://api.groq.com")
+            raise groq.BadRequestError("Error code: 400 - Tool choice is none, but model called a tool",
+                                       response=httpx.Response(400, request=request), body=None)
+        call = SimpleNamespace(id=f"t{len(rounds)}", function=SimpleNamespace(
+            name="verify_calculation", arguments='{"expression": "3*4 = 12"}'))
+        return SimpleNamespace(content="", tool_calls=[call]), 10
+
+    monkeypatch.setattr(llm, "chat_with_tools", chat_with_tools)
+    monkeypatch.setattr(settings, "MAX_TOOL_ROUNDS", 2)
+    out = await nodes.fact_check({"question": "q", "model_answer": MODEL_ANSWER, "rubric_criteria": RUBRIC,
+                                  "student_answer": "v = 3*4 = 12"})
+    assert [r[0] for r in rounds] == ["auto", "auto", "none"]
+    assert all(r[1] == settings.FACT_CHECK_REASONING_EFFORT for r in rounds)
+    assert len(out["retrieved_context"]) == 2
+    assert "3*4 = 12: holds" in out["fact_check_summary"]
+    assert "failed" not in " ".join(out["audit_notes"])
+
+
+def test_tool_result_summary_covers_both_tools():
+    from app.services.grading.nodes import summarise_tool_results
+    text = summarise_tool_results([
+        {"tool": "verify_calculation", "output": {"results": [{"expression": "2+2 = 5", "holds": False},
+            {"expression": "sqrt(2) = 1.414", "holds": False, "approximately_equal": True}]}},
+        {"tool": "search_reference_material", "output": {"query": "average velocity", "results": [{}, {}]}},
+    ])
+    assert "2+2 = 5: does NOT hold" in text and "(approximately equal)" in text and "2 excerpt(s)" in text

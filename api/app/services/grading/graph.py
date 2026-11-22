@@ -128,6 +128,7 @@ async def run_grading_graph(
                    "gatekeeper": settings.GATEKEEPER_MODEL},
         "injection_suspected": final.get("injection_suspected", False),
         "injection_flag": final.get("injection_flag", False),
+        "injection_score": final.get("injection_score"),
         "rubric_criteria": final.get("rubric_criteria", []),
         "criterion_scores": final.get("criterion_scores", []),
         "grader_criterion_scores": final.get("grader_criterion_scores", []),

@@ -209,20 +209,34 @@ async def search_reference_material(question_set_id, query: str, student_only: b
 
 # ───────────────────────── OpenAI-style tool schemas ─────────────────────────
 
+MAX_EXPRESSIONS_PER_CALL = 8
+
+
+async def verify_calculations(expressions: list[str]) -> dict:
+    """Batch form used by the fact-checker: one tool call checks all of a student's working."""
+    return {"results": [await verify_calculation(str(e)) for e in expressions[:MAX_EXPRESSIONS_PER_CALL]]}
+
+
 VERIFY_CALCULATION_SCHEMA = {
     "type": "function",
     "function": {
         "name": "verify_calculation",
         "description": (
-            "Verify a numerical or symbolic step with a computer algebra system. "
-            "Pass an expression to evaluate (e.g. '3*4.5 + 2^3', 'diff(x^3, x)') or an "
-            "equation to check (e.g. '2*x + 3 = 11' with x substituted, or "
-            "'integrate(2*x, x) = x^2'). Use for EVERY calculation the student wrote."
+            "Verify numerical or symbolic steps with a computer algebra system. Pass ALL the "
+            "student's calculations at once in `expressions`: each is an expression to evaluate "
+            "(e.g. '3*4.5 + 2^3', 'diff(x^3, x)') or an equation to check (e.g. '2*x + 3 = 11' "
+            "with x substituted, or 'integrate(2*x, x) = x^2')."
         ),
         "parameters": {
             "type": "object",
-            "properties": {"expression": {"type": "string", "description": "sympy-compatible math"}},
-            "required": ["expression"],
+            "properties": {
+                "expressions": {
+                    "type": "array",
+                    "items": {"type": "string", "description": "sympy-compatible math"},
+                    "maxItems": MAX_EXPRESSIONS_PER_CALL,
+                },
+            },
+            "required": ["expressions"],
         },
     },
 }
